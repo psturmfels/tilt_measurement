@@ -28,6 +28,22 @@ class TiltManager: NSObject {
     var parent: ViewController?
     
     var totalRecords: Int = 6000
+    var shouldRecordToEmail: Bool = false
+    
+    var currentEstimateAngleX: Double = 0.0
+    var currentEstimateAngleY: Double = 0.0
+    
+    var gyroLastDataPoint: CMGyroData? = nil
+    var accelLastDataPoint: CMAccelerometerData? = nil
+    
+    let beta: Double = 0.98
+    let updateInterval: Double = 1.0 / 20.0
+    
+    let angleBiasX: Double = -0.012881
+    let angleBiasY: Double = 0.024203
+    
+    let accelBiasX: Double = 0.002524
+    let accelBiasY: Double = -0.000348
     
     override init() {
         super.init()
@@ -36,8 +52,46 @@ class TiltManager: NSObject {
         self.accelerometerQueue = OperationQueue()
         self.gyroscopeQueue = OperationQueue()
         
-        self.motionManager!.gyroUpdateInterval = 1.0 / 20.0
-        self.motionManager!.accelerometerUpdateInterval = 1.0 / 20.0
+        self.motionManager!.gyroUpdateInterval = TimeInterval(updateInterval)
+        self.motionManager!.accelerometerUpdateInterval = TimeInterval(updateInterval)
+    }
+    
+    func handleUpdate(gyroData: CMGyroData? = nil, accelData: CMAccelerometerData? = nil) {
+        if let gyroData = gyroData {
+            self.gyroLastDataPoint = gyroData
+        }
+        
+        if let accelData = accelData {
+            self.accelLastDataPoint = accelData
+        }
+        
+        guard let gyroLastDataPoint = self.gyroLastDataPoint else {
+            return
+        }
+        guard let accelLastDataPoint = self.accelLastDataPoint else {
+            return
+        }
+        
+        let angularVelocityX: Double = gyroLastDataPoint.rotationRate.y - angleBiasY
+        let angularVelocityY: Double = -gyroLastDataPoint.rotationRate.x + angleBiasX
+        
+        let accelerationX: Double = max(min(accelLastDataPoint.acceleration.x - accelBiasX, 1.0), -1.0)
+        let accelerationY: Double = max(min(accelLastDataPoint.acceleration.y - accelBiasY, 1.0), -1.0)
+        
+        self.currentEstimateAngleX = beta * (self.currentEstimateAngleX + angularVelocityX * updateInterval) + (1.0 - beta) * asin(accelerationX)
+        self.currentEstimateAngleY = beta * (self.currentEstimateAngleY + angularVelocityY * updateInterval) + (1.0 - beta) * asin(accelerationY)
+        
+        guard let parent = self.parent else {
+            return
+        }
+        
+        DispatchQueue.main.async { [unowned parent] in
+            parent.updateLabels(withAngleX: self.currentEstimateAngleX * 180.0 / Double.pi,
+                                withAngleY: self.currentEstimateAngleY * 180.0 / Double.pi)
+        }
+        
+        self.gyroLastDataPoint = nil
+        self.accelLastDataPoint = nil
     }
     
     func handleRecordedData(fromGyroscope: Bool) {
@@ -62,7 +116,6 @@ class TiltManager: NSObject {
             DispatchQueue.main.async { [unowned parent] in
                 parent.sendDataByMail(data: data)
             }
-            
         }
     }
     
@@ -79,7 +132,6 @@ class TiltManager: NSObject {
         self.gyroscopeY = Array<Double>()
         self.gyroscopeZ = Array<Double>()
         
-        
         motionManager.startGyroUpdates(to: gyroscopeQueue) { [weak self] (data, error) in
             if let error = error {
                 print("Failed to get gyroscope updates with error \(error)")
@@ -90,6 +142,12 @@ class TiltManager: NSObject {
                 return
             }
             guard let self = self else {
+                return
+            }
+            
+            self.handleUpdate(gyroData: data, accelData: nil)
+            
+            guard self.shouldRecordToEmail else {
                 return
             }
             
@@ -137,6 +195,12 @@ class TiltManager: NSObject {
                 return
             }
             guard let self = self else {
+                return
+            }
+            
+            self.handleUpdate(gyroData: nil, accelData: data)
+            
+            guard self.shouldRecordToEmail else {
                 return
             }
             

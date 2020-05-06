@@ -1,3 +1,4 @@
+*.mov
 .ipynb_checkpoints/
 .DS_Store
 # Xcode
