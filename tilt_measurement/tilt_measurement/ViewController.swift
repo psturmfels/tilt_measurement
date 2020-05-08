@@ -11,8 +11,7 @@ import MessageUI
 
 class ViewController: UIViewController, MFMailComposeViewControllerDelegate {
     let tiltManager: TiltManager = TiltManager()
-    var xTiltLabel: UITextView?
-    var yTiltLabel: UITextView?
+    var tiltLabel: UITextView?
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -26,26 +25,17 @@ class ViewController: UIViewController, MFMailComposeViewControllerDelegate {
     }
 
     func setupTextLabels() {
-        xTiltLabel = UITextView(frame: CGRect(origin: CGPoint(x: 0.0, y: self.view.center.y - 100.0),
-                                              size: CGSize(width: self.view.frame.width, height: 200.0)))
-        xTiltLabel!.isUserInteractionEnabled = false
-        xTiltLabel!.text = "x tilt: 0.0"
-        xTiltLabel!.font = UIFont.systemFont(ofSize: 48.0)
-        xTiltLabel!.textAlignment = NSTextAlignment.center
-        self.view.addSubview(xTiltLabel!)
-        
-        yTiltLabel = UITextView(frame: CGRect(origin: CGPoint(x: 0.0, y: self.view.center.y + 100.0),
-                                              size: CGSize(width: self.view.frame.width, height: 200.0)))
-        yTiltLabel!.isUserInteractionEnabled = false
-        yTiltLabel!.text = "y tilt: 0.0"
-        yTiltLabel!.font = UIFont.systemFont(ofSize: 48.0)
-        yTiltLabel!.textAlignment = NSTextAlignment.center
-        self.view.addSubview(yTiltLabel!)
+        tiltLabel = UITextView(frame: CGRect(origin: CGPoint(x: 0.0, y: self.view.center.y),
+                                             size: CGSize(width: self.view.frame.width, height: 200.0)))
+        tiltLabel!.isUserInteractionEnabled = false
+        tiltLabel!.text = "Tilt: 0.0"
+        tiltLabel!.font = UIFont.systemFont(ofSize: 48.0)
+        tiltLabel!.textAlignment = NSTextAlignment.center
+        self.view.addSubview(tiltLabel!)
     }
     
-    func updateLabels(withAngleX x: Double, withAngleY y: Double) {
-        xTiltLabel!.text = String(format: "x tilt: %.1f", x)
-        yTiltLabel!.text = String(format: "y tilt: %.1f", y)
+    func updateLabels(withAngle theta: Double) {
+        tiltLabel!.text = String(format: "Tilt: %.1f", theta)
     }
 
     func sendDataByMail(data: Dictionary<String, Array<Double>>) {

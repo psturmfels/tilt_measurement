@@ -8,6 +8,7 @@
 
 import Foundation
 import CoreMotion
+import simd
 
 class TiltManager: NSObject {
     var motionManager: CMMotionManager?
@@ -29,21 +30,29 @@ class TiltManager: NSObject {
     
     var totalRecords: Int = 6000
     var shouldRecordToEmail: Bool = false
+    var shouldRecordToEmailPartTwo: Bool = false
     
-    var currentEstimateAngleX: Double = 0.0
-    var currentEstimateAngleY: Double = 0.0
+    var complementaryAngle: Array<Double>?
+    var gyroAngle: Array<Double>?
+    var accelAngle: Array<Double>?
     
     var gyroLastDataPoint: CMGyroData? = nil
     var accelLastDataPoint: CMAccelerometerData? = nil
     
-    let beta: Double = 0.98
+    // Initialize the current estimated rotation as the zero quaternion
+    var currentEstimatedRotation: simd_quatd = simd_quatd(ix: 0.0, iy: 0.0, iz: 0.0, r: 1.0)
+    var estimateUsingGyro: simd_quatd = simd_quatd(ix: 0.0, iy: 0.0, iz: 0.0, r: 1.0)
+    
+    let alpha: Double = 0.02
     let updateInterval: Double = 1.0 / 20.0
     
     let angleBiasX: Double = -0.012881
     let angleBiasY: Double = 0.024203
+    let angleBiasZ: Double = -0.021752
     
     let accelBiasX: Double = 0.002524
     let accelBiasY: Double = -0.000348
+    let accelBiasZ: Double = -0.004805
     
     override init() {
         super.init()
@@ -54,6 +63,10 @@ class TiltManager: NSObject {
         
         self.motionManager!.gyroUpdateInterval = TimeInterval(updateInterval)
         self.motionManager!.accelerometerUpdateInterval = TimeInterval(updateInterval)
+        
+        self.complementaryAngle = Array<Double>()
+        self.gyroAngle = Array<Double>()
+        self.accelAngle = Array<Double>()
     }
     
     func handleUpdate(gyroData: CMGyroData? = nil, accelData: CMAccelerometerData? = nil) {
@@ -72,22 +85,73 @@ class TiltManager: NSObject {
             return
         }
         
-        let angularVelocityX: Double = gyroLastDataPoint.rotationRate.y - angleBiasY
-        let angularVelocityY: Double = -gyroLastDataPoint.rotationRate.x + angleBiasX
+        let measured_w: simd_double3 = simd_double3(x: gyroLastDataPoint.rotationRate.x - self.angleBiasX,
+                                                    y: gyroLastDataPoint.rotationRate.y - self.angleBiasY,
+                                                    z: gyroLastDataPoint.rotationRate.z - self.angleBiasZ)
+        let measured_l: Double = simd_length(measured_w)
+        let theta: Double = updateInterval * measured_l
+        let gyro_update: simd_quatd = simd_quatd(angle: theta, axis: simd_normalize(measured_w))
+        self.estimateUsingGyro = simd_mul(self.estimateUsingGyro, gyro_update)
+        self.currentEstimatedRotation = simd_mul(self.currentEstimatedRotation, gyro_update)
         
-        let accelerationX: Double = max(min(accelLastDataPoint.acceleration.x - accelBiasX, 1.0), -1.0)
-        let accelerationY: Double = max(min(accelLastDataPoint.acceleration.y - accelBiasY, 1.0), -1.0)
+        let measured_gravity: simd_double3 = simd_double3(x: accelLastDataPoint.acceleration.x - self.accelBiasX,
+                                                          y: accelLastDataPoint.acceleration.y - self.accelBiasY,
+                                                          z: accelLastDataPoint.acceleration.z - self.accelBiasZ)
         
-        self.currentEstimateAngleX = beta * (self.currentEstimateAngleX + angularVelocityX * updateInterval) + (1.0 - beta) * asin(accelerationX)
-        self.currentEstimateAngleY = beta * (self.currentEstimateAngleY + angularVelocityY * updateInterval) + (1.0 - beta) * asin(accelerationY)
+        let measured_gravity_quaternion: simd_quatd = simd_quatd(angle: Double.pi, axis: simd_normalize(measured_gravity))
+        
+        // Note: I had to invert this formula in order to get it to work for me. Perhaps
+        // the swift hardware has a sign difference with the paper somewhere?
+        let measured_global_gravity: simd_quatd = simd_mul(simd_mul(self.currentEstimatedRotation, measured_gravity_quaternion),
+                                                                     simd_inverse(self.currentEstimatedRotation))
+        let gravity_axis: simd_double3 = simd_double3(x: 0.0, y: 0.0, z: -1.0)
+        // I also had to modify this because the measured gravity vector has a z of -1.0
+        // rather than 1.0. Sometimes the conversion changes it to 1.0, but sometimes
+        // it does not, meaning the tilt_error could fluctuate between close to 0.0
+        // and close to pi!
+        let tilt_error: Double = acos(abs(simd_normalize(measured_global_gravity.axis).z))
+    
+        let projected_global_gravity: simd_double3 = simd_double3(x: measured_global_gravity.axis.x, y: measured_global_gravity.axis.y, z: 0.0)
+        let tilt_axis: simd_double3 = simd_double3(x: projected_global_gravity.y, y: -projected_global_gravity.x, z: 0.0)
+        
+        let filter_correction: simd_quatd = simd_quatd(angle: -self.alpha * tilt_error, axis: simd_normalize(tilt_axis))
+        self.currentEstimatedRotation = simd_mul(filter_correction, self.currentEstimatedRotation)
+        
+        let estimateUsingAccel: Double = acos(simd_dot(gravity_axis, simd_normalize(measured_gravity)))
+        
+        let originalNormal: simd_double3 = simd_double3(x: 0.0, y: 0.0, z: 1.0)
+        let rotatedComplementary: simd_double3 = simd_normalize(self.currentEstimatedRotation.act(originalNormal))
+        let estimateUsingComplementary: Double = acos(simd_dot(originalNormal, rotatedComplementary))
+        
+        let rotatedGyro: simd_double3 = simd_normalize(self.estimateUsingGyro.act(originalNormal))
+        let estimateUsingGyro: Double = acos(simd_dot(originalNormal, rotatedGyro))
+        
+        accelAngle!.append(estimateUsingAccel)
+        gyroAngle!.append(estimateUsingGyro)
+        complementaryAngle!.append(estimateUsingComplementary)
         
         guard let parent = self.parent else {
             return
         }
         
         DispatchQueue.main.async { [unowned parent] in
-            parent.updateLabels(withAngleX: self.currentEstimateAngleX * 180.0 / Double.pi,
-                                withAngleY: self.currentEstimateAngleY * 180.0 / Double.pi)
+            let angleInDegrees: Double = estimateUsingComplementary * 180.0 / Double.pi
+            parent.updateLabels(withAngle: angleInDegrees)
+        }
+        
+        if self.shouldRecordToEmailPartTwo {
+            if self.accelAngle!.count >= self.totalRecords {
+                motionManager!.stopGyroUpdates()
+                motionManager!.stopAccelerometerUpdates()
+                DispatchQueue.main.async { [unowned parent, self] in
+                    let angleData: Dictionary<String, Array<Double>> = ["angle_using_accelerometer": self.accelAngle!,
+                                                                        "angle_using_gyroscope": self.gyroAngle!,
+                                                                        "angle_using_complementary_filter": self.complementaryAngle!]
+                    parent.sendDataByMail(data: angleData)
+                }
+            } else if self.accelAngle!.count % 100 == 0 {
+                print("Current gathered records: \(self.accelAngle!.count)/\(self.totalRecords)")
+            }
         }
         
         self.gyroLastDataPoint = nil
